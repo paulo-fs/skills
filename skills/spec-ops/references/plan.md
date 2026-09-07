@@ -1,125 +1,81 @@
-# PLAN — seams, fog, and the spec
+# PLAN - Seams, Fog, and Spec
 
-**Completion criterion:** every FR testable at a seam **proven to observe it**, every decision's
-consequences enumerated, every fog item dispositioned, out-of-scope written down, and
-`scripts/spec-gate.sh spec <feature-dir>` exits 0.
-
-Runs to completion; only the four walls interrupt (SKILL.md). `--review` restores a gate here.
+**Complete when:** FRs have proven observation seams or explicit accepted-unverified dispositions, applicable acceptance examples have independent sources or explicit assumption labels, decisions include consequences, fog and exclusions are recorded, and `.specs/bin/spec-gate.sh spec <feature-dir>` exits 0. Apply [control C1-C4](control.md#decision-matrix) to blockers and phase boundaries; planning-only never implies permission to implement.
 
 ## 1. Synthesize, don't interview
 
-Work from what the conversation and the codebase already hold. Explore the repo first — `CONTEXT.md`,
-ADRs, `.specs/codebase/*` when present — and use the project's own vocabulary. This phase carries no
-tickets, so its class lives here: **all exploration is `Class: scout`**, read-only, never inheriting
-the session tier ([cheap-workers.md](cheap-workers.md)).
+Read the conversation, relevant code, repository instructions, existing context and decisions before asking questions. Use repository vocabulary. Research may run read-only inline or through available scouts; scouts are optional and do not count toward builder width. Report unavailable checks as not run; a tool-less model may draft but cannot pass PLAN.
 
-## 2. Agree the seams — then prove they observe
+## 2. Agree the seams, then prove they observe
 
-A **seam** is the public interface where behavior is observed — where tests will live.
+- A **seam** is a public interface where behavior is observable. Prefer existing seams and the highest level that actually observes the FR; avoid redundant seams.
+- **Probe each new seam before investing in tests:** run one disposable assertion and observe failure for the intended reason. Record the command and result. A passing assertion against absent behavior proves nothing; CSS-less DOMs and passthrough mocks can hide defects. Remove only the disposable probe you created, never existing tests. The probe does not replace implementation's red-green loop.
+- Before a repository-mutating probe, declare narrow `Where:` paths and snapshot to a unique file under `.specs/.boundaries/` using the bootstrapped runtime. Prefer a new uniquely named probe over editing existing tests. After removing only your probe changes, run `boundary .specs --where <pattern> --since <snapshot>`; preserve recovery evidence. This safety step applies during PLAN, not only EXECUTE.
+- Record how every seam executes in this environment, including existing evidence or a new probe. "Browser" or "manual" alone is insufficient: name the runner or reachable app and interaction mechanism. If observation is unavailable, find another seam or explicitly record the FR as **accepted-unverified**, with owner, reason and remaining check; never imply verification.
 
-- Prefer **existing** seams. Use the **highest** seam that can observe the behavior. Fewer seams beat
-  more; the ideal number is one.
-- **Probe each new seam.** Write one throwaway assertion at the seam for the behavior you intend to
-  test, run it, and require it to **fail for the right reason**. A probe that cannot be made to fail
-  means the seam does not observe the FR in this environment — jsdom that never loads CSS, a global
-  passthrough mock, an attribute the accessibility tree ignores. Cost: one scoped test run. Delete
-  the probe afterwards.
-- **State how every declared seam executes here.** A row reading "manual UAT" or "browser" is not a
-  seam until the spec says *by what mechanism, in this environment* — e.g. driving an already-running
-  app instance, never starting a server. A seam with no executable path is not a seam: its FRs move
-  to a seam that does observe them, or become explicitly **accepted-unverified**, listed as such.
+## 3. Fog - research before asking
 
-A probe that fails to fail is the cheapest signal in this skill: it is what stops a feature from
-paying for hundreds of assertions that pass by construction. Skip nothing else before skipping this.
+1. State a specific question, not a topic: "Which timezone does this export use?"
+2. Search code, schemas, docs and history inline, or delegate independent searches when useful. Collect paths and evidence, not invented answers. If access is unavailable, disclose the research not run.
+3. Classify: **resolved** has evidence; **decidable** has a defensible, reversible default recorded under `Decidido sem perguntar`; **open** needs an owner decision. Record evidence and assumptions in Decisions. Present open questions with searches, findings, options and a recommendation.
+4. Give each surviving item a destination: FR, named ticket, named ticket's `UAT:` item, or **accepted-unknown** with an owner and resolution condition. Ticket destinations become concrete during TICKETS.
 
-## 3. Fog — research before asking, always
+Runtime defaults are behavior, not a fog escape hatch: specify the default as an FR or expose the unresolved choice. Do not let incidental implementation choose silently.
 
-Models ask obvious questions. An obvious question is one whose answer was already on disk, so the
-guard is mechanical: **no fog item reaches the user until a scout has gone after it.**
+## 4. The spec - `.specs/features/<name>/spec.md`
 
-1. **Write each fog item as a specific question**, never a topic. "Which timezone does the romaneio
-   use?" qualifies; "timezone questions" is an unwritten note. Test: *can I state the question
-   precisely?* — not *can I answer it?*
-2. **Batch every question to scouts at once** — they are independent, they are cheap, and each
-   returns **raw evidence with paths**, classifying nothing.
-3. **Classify the evidence** — the planner's call, never the scout's:
+Define each requirement once on its own `- **FR-n**` line. Replace placeholders below; preserve the section names consumed by spec-gate. Keep `## Decisions` for STANDALONE; TRACKED uses `.specs/decisions/<slug>.md` and an INDEX entry instead.
 
-| Verdict | Criterion | Destination |
-| --- | --- | --- |
-| **resolved** | the answer is in code, schema, docs or history | `## Decisions` with its evidence **path**. Never reaches the user |
-| **decidable** | unstated, but a defensible default follows from repo convention or precedent | assumed, recorded, listed under `Decidido sem perguntar`. Reversible |
-| **open** | evidence contradicts itself, or it is a business decision no artifact can hold | reaches the user — **wall 4** |
-
-4. **An open question is presented with its research attached**: what was searched, what was found,
-   the options, and a recommendation. Assembling that evidence answers the easy ones on the way,
-   which is what actually kills the obvious question.
-
-Watch for fog hiding a **runtime default** ("unclear what X shows in state Y"). A default value is
-never fog — it is a missing FR, and it ships as whatever the code happens to do.
-
-Every surviving item carries a disposition: → an FR · → a ticket (even a blocked one) · → a `UAT:`
-item on a named ticket · → **accepted-unknown**, with an owner and what would resolve it. "I can't
-phrase it better yet" is a description, not a disposition.
-
-## 4. The spec — `features/<name>/spec.md`
+For ambiguous, numeric, default or error requirements, add concise acceptance examples under Testing decisions or beneath the defining FR. Reference the FR-id without defining it again. Independent sources are explicit owner statements, pre-feature frozen behavior, or approved policy/doc examples; cite evidence that actually specifies the expected result and preserved/forbidden behavior. Never derive expectations from the current implementation or invent product numbers, rounding or currency defaults. Exact expected values must be independently specified to count as confirmed evidence. If a source is absent, record the researched question or defensible default as an **assumption**, with its disposition in Decisions/Not yet specified, not as confirmed evidence.
 
 ```markdown
-# <Feature> — Spec
+# <Feature> - Spec
 
 ## Problem
-<2-3 sentences from the user's perspective. Why now.>
+<User problem and why now, in 2-3 sentences.>
 
 ## Functional requirements
-- **FR-1** <testable statement>
-<IDs are load-bearing: tickets and validation trace back to them. Define each id ONCE, on its own
- `- **FR-n**` line — spec-gate checks for duplicate definitions.>
+- **FR-1** <Concrete observable behavior, including relevant defaults and failures.>
 
 ## Seams under test
 | Seam | Existing/new | What it observes | Probed? | How it executes here |
-<The last two columns are never blank. "manual" is not a mechanism.>
+| --- | --- | --- | --- | --- |
+| <Public interface> | <existing or new> | <FR-ids> | <Evidence or explicit limitation> | <Command or reachable app and mechanism> |
 
 ## Implementation decisions
-<Modules, interfaces, contracts, schema changes. NO file paths, NO code — they go stale and belong in
-tickets. Exception: a snippet that encodes a decision more precisely than prose.>
+<Modules, interfaces and contracts; each decision with its consequences.>
 
 ## Testing decisions
-<Which seams get which test type; prior art; which FRs are UAT-only.>
+<Seam/test mapping, prior art, probe evidence, UAT-only FRs and verification limitations.>
+
+### Acceptance examples
+| FR | Input/context | Observable expected result | Preserved/forbidden behavior | Independent source / status |
+| --- | --- | --- | --- | --- |
+| <FR-id reference> | <Concrete input and relevant state> | <Exact observable outcome> | <What must remain unchanged or never happen> | <Source citation and what it establishes; label assumptions explicitly> |
 
 ## Frozen contracts
-<Things that must NOT change, as auditable statements. Scope: the PRE-FEATURE tree only.>
+<Auditable pre-feature behavior, identifiers, payloads and existing assertions that must not change.>
 
 ## Not yet specified
-<Fog surviving § 3, each with its disposition and the evidence already gathered, cited by path.>
+<Remaining questions, evidence paths, dispositions and owners; or none.>
 
 ## Out of scope
 | Item | Why excluded |
-<Never graduates — returns only as a new effort.>
+| --- | --- |
+| <Excluded behavior> | <Reason; requires a separate effort> |
 
 ## Carried debt
-<med/low review findings deferred to VALIDATE. Empty at PLAN time.>
+<Deferred med/low review findings for VALIDATE; none at PLAN.>
 
-## Decisions          ← STANDALONE mode only
-<In TRACKED mode write decisions/<slug>.md + an INDEX line instead.>
+## Decisions
+<Resolved evidence and reversible assumptions with consequences.>
 ```
 
-**The budget is enforced, not suggested.** `spec-gate.sh spec` fails the phase past ~24 KB and smells
-past ~15 KB, and it lists any off-template `##` section. Both overruns are the same two things every
-time: recipes that belong in `design.md` or a ticket's `## Notes`, and fog evidence pasted where a
-path belongs. A kilobyte here is read by the planner, by every worker and by the reviewer — it is
-paid more times than a kilobyte anywhere else in the pipeline.
+For example, this skill's existing-file install contract gives: `init` encounters an existing worker definition -> reports already present and leaves its contents unchanged -> overwriting is forbidden. The source is `SKILL.md`'s explicit `init` idempotency rule, not an implementation run that happened not to overwrite the file.
 
 ## 5. Rules
 
-- **Challenge vagueness.** "Fast", "simple", "users" — make each concrete or cut it. Every FR must be verifiable at an agreed, **probed** seam. An FR testable at no seam is a smell:
-  either the seam set is wrong or the FR is decoration.
-- **Every decision carries its consequences** — a decision entry is not done until it answers *what
-  does this now make impossible, and what survives that shouldn't?* Structural decisions ("stacked
-  views instead of a route", "second mount point instead of hoisting") silently keep alive whatever
-  the discarded alternative would have destroyed: a shell that no longer unmounts, a control that
-  stays mounted but inert, chrome that no longer disappears on navigation. Free to enumerate now,
-  expensive to find in review. Same line as the decision.
-- **Frozen contracts are scoped to the pre-feature tree** — never an artifact the feature itself
-  created a wave earlier. And **frozen ≠ read-only**: a frozen test file accepts *new* cases freely;
-  frozen means its existing assertions and expected values do not change. Forbidding extension pushes
-  workers into parallel sibling test files, or into a worse design that keeps the old assertions true.
-- The spec names behavior, not layout. Pixel and class recipes belong in `design.md` or ticket bodies.
+- **Consequences belong beside each decision:** what becomes impossible, and what survives that should not? Include lifecycle effects such as mounted-but-inert controls, not just the chosen structure.
+- **Frozen means pre-feature contracts, not read-only files.** New tests may extend frozen files; existing assertions and expected values remain unchanged. Artifacts created earlier in this feature are not pre-feature contracts.
+- **Execution context is not FR-only:** builders and reviewers need relevant `Implements:`/`UAT:` FRs plus applicable acceptance examples and their sources, seams, frozen contracts, implementation/testing decisions and referenced decisions. Identify those sections or paths in ticket Notes without copying the spec or loading unrelated features.
+- Keep behavior and decisions here; file-level recipes belong in tickets, architectural detail in `design.md` only when needed. Cite research paths instead of pasting evidence. The default gate flags size above 15 KiB, with a hard threshold at 24 KiB; resolve findings before proceeding.

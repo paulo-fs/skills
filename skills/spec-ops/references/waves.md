@@ -1,157 +1,62 @@
-# WAVES — everything that exists only above width 1
+# WAVES
 
-None of this loads at width 1. If you are reading it, `execute.md § 1` measured width > 1: more than
-one **builder** can run at the same time here. Scouts and refuters are not builders and never
-depended on width ([cheap-workers.md](cheap-workers.md)).
+Use only after [control's backend/width policy](control.md#backend-selection) selects useful parallel execution. Native subagents, a configured CLI or a canvas may transport the same roles; this file verifies and operates the selected transport, not a competing selection policy.
 
-## 1. The backend contract
+## Preflight
 
-This skill never requires a named tool. It asks five questions of whatever can run a worker, plus
-width. Answer them for what is actually present, and record the answers in the run header:
+Read the installed backend's documentation/help and record concrete answers before launch:
 
-| Question | What the answer must give you |
+| Capability | Required evidence |
 | --- | --- |
-| **Dispatch** | how to hand one worker one ticket path, and how to issue several at once |
-| **Report** | how the worker's report gets back — or whether it arrives by itself |
-| **Release** | how a worker's context is discarded between unrelated tickets |
-| **Write prerequisite** | whether the worker can write files unattended, or halts on its first write |
-| **Invariant** | where § 3's contract is written **once**, so it is not re-sent per ticket |
-| **Width** | how many builders it can run concurrently |
+| Dispatch and identity | How to start concurrent workers with the correct role and resolve their handles |
+| Context | How role instructions, repository instructions, tickets and applicable contracts reach each worker |
+| Permissions | Whether scoped edits and required commands can run; how blocked approval requests reach the user |
+| Completion | Exact report/event mechanism each role can access, including a read-only scout |
+| Liveness and stop | How to distinguish running, waiting, exited and crashed; how to cancel and confirm no remaining writers |
+| Isolation | Fresh context between unrelated tickets; command output paths, ports and test resources do not collide |
 
-### Detection ladder — capability first, tool name never
+Do not assume terminal idleness proves write permission, a CLI invocation is stateless, a transcript becomes an event automatically, or a role's prose creates a sandbox. Never bypass approval prompts or broaden permission grants. If a read-only worker cannot send the required completion event, use a supported returned-message adapter or do not dispatch it there.
 
-Take the highest rung that answers all six. Named products appear only as examples of a rung.
+Use the host's least-privilege controls: read-only investigation for scouts; read-only review plus explicitly permitted serial checks for reviewers. If role scope cannot be enforced by the host, disclose that it remains an instruction, not a sandbox; do not claim equivalent isolation.
 
-1. **Named subagents** — the harness reads worker definitions from a directory in the repo
-   (Claude Code: `.claude/agents/*.md`; an SDK's `agents` map is the same rung). Best answer to every
-   question: identity is durable so the invariant lives in the definition; the model is per-role
-   frontmatter; the definitions are versioned **with the repo**, so the team travels with a clone;
-   and each call starts clean — which is the release, for free, with no ceremony and no human.
-   `/spec-ops init` materializes this skill's four definitions here (§ 2).
-2. **Anonymous subagents** — a subagent facility with no stored definitions. Same properties, except
-   the invariant must be **inlined per call**: ~20 lines, once per dispatch. Small; do not trade it
-   away for something more complicated.
-3. **A shell-invocable agent CLI** — one command runs a full non-interactive agent session
-   (`opencode run -m <provider>/<model> "<prompt>"`, and equivalents). The rung for **models the
-   harness cannot run natively**: budget isolation, or a cheap executor on a `mechanical` ticket
-   ([cheap-workers.md](cheap-workers.md)). Stateless, so release is free and the invariant is inlined.
-4. **Nothing** → INLINE (execute.md). Not a failure; it is the default.
+For named agents, install only a compatible schema; otherwise pass the role body directly. Models and tool bindings come from the host's available capabilities, not ticket classes. For critical work, load both the critical supplement and the builder contract. Project-specific knowledge belongs in `Reads:`, not another agent definition.
 
-**Persistent-worker canvases are a rung 0, and deliberately unlisted.** A worker that outlives a
-ticket must be reset between unrelated ones — this skill's own rule (§ 3, warm context) — so its
-defining feature is the one thing you then pay to undo, sometimes by interrupting a human. Such a
-tool is a good surface for a person to *watch* work; it is a poor backend for running it. If one is
-open on this machine, leave it to the human and pick a rung above.
+## Plan the batch
 
-Whatever you pick, **declare it in the run header** with the width it gave you. A backend swap is
-never a class downgrade — it is another transport for the same class table.
+The main session validates dependencies, ticket bodies, full gate commands and external-effect authorization before scheduling. Supply the coordinator the resolved control-policy path/body and reviewed checkpoint, not just headers; it must not infer command safety from scheduling data.
 
-## 2. Where the four worker definitions come from
+Apply control's independence test to unblocked tickets and their local commands. Builders run only approved local TDD checks; the dispatcher serializes full suites, builds and coverage after writers stop. Snapshot the batch and update its [checkpoint](control.md#checkpoint) before dispatch, including actual handles as they become available.
 
-`agents/` in this skill ships four definitions that carry the **contract and nothing else**:
-`spec-ops-scout`, `spec-ops-builder`, `spec-ops-builder-critical`, `spec-ops-reviewer`. They hold no
-project knowledge, no language, no framework — which is exactly what makes them correct on the first
-day of a project in a stack none of them has heard of. Domain reaches the worker by two channels that
-already exist and cost nothing: the repo's own agent instructions, loaded automatically, and the
-ticket's `Reads:`, resolved once at TICKETS time.
+## Dispatch inputs
 
-`/spec-ops init` installs them (procedure: SKILL.md § `init`). It never invents roles by discovery.
+Give builders one ticket path, the role contract location/body, the project root, mode, safe local commands and any action-scoped authorization. Header fields need not be copied. Provide a working report mechanism and the wave's remaining repair budget.
 
-**The bar for any further agent, so this never becomes a catalogue:**
+Give the reviewer the complete batch, not a single representative ticket:
 
-> Can you name something this agent knows that **no document a ticket could point at** contains?
-
-If no, it is a `Reads:` line, not an agent. A project-local agent is legitimate when it encodes a
-**procedure or a tool access** — driving a live editor over MCP, an interactive device harness — and
-never when it encodes knowledge. "A builder that knows framework X" is always the second kind.
-
-## 3. Dispatch is a path, not a packet
-
-Tell the worker which ticket to build. That is the whole per-dispatch payload.
-
-Everything a packet used to carry — `Implements:`, `Reads:`, `TDD:` — is a **literal copy of that
-ticket's header**, sitting in the file the worker is about to open. Copying it into the message
-imposes no constraint the file does not already impose: a worker that ignores its own header ignores
-the message too. What looked like the packet's job was the *rule* — "read only the FRs your
-`Implements:` names; `Reads:` is your entire guideline budget" — and a rule that never varies per
-ticket belongs in the invariant (execute.md § 2), written once.
-
-| Rung | Invariant + report schema live… | Per dispatch |
-| --- | --- | --- |
-| 1 (named) | in the worker definition | the ticket path |
-| 2, 3 (anonymous, CLI) | inlined in every call | the ticket path |
-
-**One wave, one batch:** every ticket goes out together and you wait for all of them before closing
-the wave. The barrier costs rolling per-ticket review and buys a drastically simpler control loop.
-
-**Warm context follows the work item and never crosses it.** Keep a worker's conversation only while
-its own item can still come back — fix rounds of the same ticket, the same wave for a reviewer — then
-release it. Reusing a warm worker for an unrelated ticket drags the old transcript as input tokens on
-every turn and biases the new judgment. The reviewer is the worst offender: consecutive reviews of
-unrelated waves have no continuity worth keeping.
-
-## 4. Compile
-
-Everything this needs is in the ticket **headers** — one command reads them all, no body is opened:
-
-```bash
-grep -E '^(Blocked by|Where|Reads|Class|TDD|UAT|Implements|Status):' .specs/features/<f>/tickets/*.md
+```text
+Tickets: <all paths in this wave>
+Scope: <original/current snapshots, changed paths, before/after diff evidence>
+Contracts: <applicable FRs, seams, frozen contracts, decisions, Reads>
+Checks: <literal commands, exit codes, inspected scope>
+Repairs: <round, remaining budget, unresolved findings>
+Report: <supported completion channel>
 ```
 
-1. **Toposort** `Blocked by:` → waves. Tickets are numbered in dependency order, so this is usually
-   reading the numbers.
-2. **Partition within a wave by `Where:` intersection** (prefix/glob match is enough). Disjoint →
-   parallel batch. Overlapping → serialize. This is the only thing preventing two workers corrupting
-   each other in a shared worktree, and the only reason `Where:` disjointness has value at all.
-3. **Bind** class → worker definition; record the binding in the closing report, never in the ticket.
+Use each snapshot's recovery copies for previously dirty content, the recorded starting commit for initially clean tracked paths, and inspect new files separately. A snapshot manifest alone is not a diff. The main session prepares before/after evidence when the backend cannot. Include integration context without attributing earlier unrelated changes to this wave.
 
-Wave width is capped by the backend's width for that class. Needing more is the user's call — surface
-it in the report, do not stall on it.
+## Supervise and settle
 
-**Edges pay for themselves only here.** At width 1 a false `Blocked by:` costs nothing (you execute in
-order regardless); here each one costs a barrier. The test, applied when tickets were authored:
-*does B's **code** fail to compile or run without A, or does B merely **demo** better after A?* Only
-the first is an edge — "B is the button that reaches A's screen" is a demo relationship, and B can
-drive the state directly in its own tests and ship in the same wave.
+1. Launch the planned batch and wait through its supported completion mechanism. On partial launch failure, stop/cancel started workers and apply control C2 before any fallback.
+2. On timeout, probe task/process health and approvals, update the checkpoint, and apply C2/C3. Surface owner questions without answering on their behalf.
+3. Once every writer stops, run the literal gates serially, honesty and boundary for the union of batch tickets. Verify current and original boundaries across repairs, accounting only for validated intervening work as specified in [execute.md](execute.md). Compare reported paths with each worker's `Where:`; the script proves wave scope, not individual authorship.
+4. Dispatch the reviewer with the full input above, then apply control C7-C10 using the checkpoint's shared budget. Follow [verify.md](verify.md) for review and repairs.
+5. The main session records evidence and acceptance boxes, marks `done`, and reconciles decisions/INDEX before the next batch. A coordinator requests these edits and waits for acknowledgment. Shared-artifact work uses the main session's serialized maintenance path, never an unauthorized worker edit. If the wave is incomplete, use [late maintenance](execute.md#late-maintenance) within the suspended unit, keeping full gates pending until all its phases settle.
+6. Reuse context only for repairs to the same ticket or reviews of the same wave. Release/reset before unrelated work, even when the role matches.
 
-## 5. The report — fixed schema, literal gate
+Apply control's stop/liveness rules before handover; a missing completion event must never become an inferred success.
 
-Part of the invariant, not of a dispatch. Exactly once per worker, ≤12 lines:
+## Optional coordinator
 
-```
-files touched · net test delta · gate command (literal) + exit status ·
-deviations (SPEC_DEVIATION markers) · blockers · observations
-```
+The [coordinator role](../agents/spec-ops-coordinator.md) is a scheduler, not a second planner. Bind it to a backend only after preflight. The main session supplies reviewed execution context and remains reachable for ticket authoring, shared maintenance and owner decisions. If it is unavailable, the coordinator pauses rather than improvising those jobs.
 
-- **The gate command must be literal** — the exact string that ran. Paraphrased gate lines are how a
-  fabricated success reaches the user. Verify with `spec-gate.sh`, never by reading a diff.
-- **`observations`** is where "if this looks wrong, report it" gets answered: fog the ticket asked
-  about, a default that seems off, a control that appears inert — each with a verdict. Without this
-  slot such a finding is neither deviation nor blocker and evaporates. An empty line here when the
-  ticket asked a question is itself a finding.
-- No transcripts, no diffs.
-
-## 6. Escalation ladder
-
-Failed its gate 2× at its tier → redispatch **once** at the next tier up, with the failure context
-appended (gate output, what was attempted, findings) — a blind retry repeats the mistake. Still
-failing, or already top tier → **wall 2**: stop and hand the user the findings. Never loop, never
-demote after a failure. A ladder that never fires across a whole feature means the floor is too high
-to learn from.
-
-## 7. Write prerequisite
-
-A worker in a normal permission mode **halts on its first file write** and waits, which is what every
-builder ticket does continuously. Measure it before the first dispatch, never mid-wave.
-
-- Subagent rungs inherit the session's permission mode and add **no** permission surface. Nothing to do.
-- A shell-invoked CLI has its own permission model. Grant at **user level, scoped to the projects
-  root** — not one repo (this skill runs across projects) and not the whole disk.
-- A worker that is **read-only by role** needs no grant at all; leaving its edit permission asking
-  turns the role boundary into an enforced one.
-
-Answering a worker's prompt on its behalf is a bypass through another door, and so is working around a
-host guardrail that refuses to *write* the grant. Hand the user the exact configuration and stop.
-
-**Never make a worker out of the gate.** Running commands is `scripts/spec-gate.sh`: a worker whose
-whole job is to execute a fixed command buys nothing and costs a context, an allowlist and a release.
+For Orca or another canvas, load that host's current orchestration instructions instead of embedding version-specific CLI commands here. The same dispatch/report/liveness contract applies; a canvas is not evidence of portability or unattended permission by itself.

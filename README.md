@@ -14,7 +14,7 @@ npx skills@latest add paulo-fs/skills
 
 ### spec-ops
 
-Spec-driven planning and verified execution: write a spec, split it into tracer-bullet tickets, implement each slice, and validate the result.
+Model-neutral spec-driven delivery: write a spec with sourced acceptance examples, split it into vertical tickets, implement each slice, and validate the result. A shared decision policy governs backend selection, checkpoints, retries, and completion; INLINE is the default and parallel workers are optional.
 
 Common commands:
 
@@ -25,10 +25,32 @@ Common commands:
 /spec-ops do [<name>|<ticket>|<path>]
 /spec-ops validate <name>
 /spec-ops reconcile <name>
-/spec-ops promote <name>
+/spec-ops promote
 ```
 
 See [`skills/spec-ops/SKILL.md`](skills/spec-ops/SKILL.md) for the complete workflow.
+
+## Validation
+
+Run from the repository root with Bash 3.2+, Git, and standard macOS/Linux utilities:
+
+```bash
+export TMPDIR="$(mktemp -d)"
+bash skills/spec-ops/tests/spec-gate.test.sh
+bash skills/spec-ops/tests/skill-docs.test.sh
+bash skills/spec-ops/tests/workflow.test.sh
+bash skills/spec-ops/tests/agent-evals.test.sh
+```
+
+The suites use isolated temporary repositories, not the working tree. Evaluator test artifacts remain under the printed temporary path for inspection. These commands do not launch LLMs.
+
+With ShellCheck installed:
+
+```bash
+shellcheck skills/spec-ops/scripts/spec-gate.sh skills/spec-ops/tests/*.sh
+```
+
+For actual agent runs, use the fixtures and trace-based review procedure in [`references/evaluate.md`](skills/spec-ops/references/evaluate.md). Scripted tests alone do not establish model or backend compatibility.
 
 ## License
 

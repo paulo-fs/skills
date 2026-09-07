@@ -1,144 +1,83 @@
 ---
 name: spec-ops
-description: "Spec-driven planning and verified execution — spec, tracer-bullet tickets, then one worker at a time inline or waves when real parallelism exists. Backend-agnostic: ships its own worker definitions and binds to whatever can run them. Use when the user wants to (1) plan a feature (\"plan\", \"planejar\"), (2) break work into tickets (\"tickets\", \"quebrar em tickets\"), (3) implement planned work (\"do\", \"implementar\", \"continua a feature\"), (4) run a quick fix, (5) manage .specs state (\"promote\", \"reconcile\"), (6) prepare a repository to run this skill (\"init\", \"setup\", \"roster\"). Inline by default; waves only at width > 1. Not for read-only investigation or full ownership handoffs."
+description: "Model-neutral spec-driven delivery: plan a feature, create vertical tickets, implement planned work, run a bounded quick fix, validate evidence, or reconcile .specs state. Use for /spec-ops plan, tickets, do, validate, reconcile, init, or promote. Works inline with any coding model; parallel workers are optional. Not for read-only investigation, generic repository setup, or full ownership handoffs."
 license: MIT
 metadata:
   author: paulo-fs
-  lineage: spec-driven v1.3.1 → 2.0 (roster) → 3.0 (width-branched, script-gated) → 3.1 (backend by contract, one init)
-  version: 3.1.0
+  version: 3.5.0
 ---
 
 # spec-ops
 
-The spec says WHAT and where the **seams** are; **tracer-bullet** tickets say the slices; execution
-proves each slice by command. **Nothing here ever commits** — the user reviews the working tree and
-commits manually.
+Define behavior and observable interfaces in a spec, deliver vertical tickets, and verify the result. Never stage, commit, restore another person's work, or create a worktree without permission. Repository instructions and host permissions always apply.
 
-## Width decides the shape — measure it before anything else
+## Capabilities, not providers
 
-Orchestration machinery is only worth its cost when workers run **at the same time**. Measured on a
-cohesive build, strong-planner-plus-cheap-executor loses to the strong model alone on quality *and*
-wall clock, and frontier models free to delegate did not (numbers: [cheap-workers.md](references/cheap-workers.md)).
-So the first question is never *which worker* — it is **how many at once**.
+The same Markdown workflow applies to GPT, Claude, Gemini, or another model. Slash commands below are user intents, not a required CLI. Use the host's actual read, edit, search and command tools; do not invent tool names or assume instructions load automatically.
 
+Execution requires filesystem access, Git, Bash 3.2+ and standard macOS/Linux utilities (WSL is suitable). Run the gate from the Git worktree root. A chat-only model may draft artifacts, but must label checks `not run` and stop before claiming a phase passed. No subagents, subscription, specific model or MCP server is required.
+
+Read [control.md](references/control.md) before routing, dispatch, resume or acceptance. It owns the decision matrix, deterministic backend selection, state and repair budget. **INLINE is the default**; `--serial` forces it. WAVES requires useful parallel work and a verified backend, not merely available worker slots.
+
+## Commands and routing
+
+```text
+/spec-ops init [--tracked]        install the runtime; tracking is opt-in
+/spec-ops plan <name>             create spec.md
+/spec-ops tickets <name>          create tickets/NN-*.md
+/spec-ops do [<name>|<NN>|<path>] execute or resume; implement is an alias
+/spec-ops validate <name>         verify the assembled feature
+/spec-ops reconcile <name>        reconcile evidence and ticket state
+/spec-ops promote                add tracking to existing standalone features
 ```
-WIDTH = BUILDERS that can run CONCURRENTLY on this machine for this feature
-├─ 1  → INLINE (default). No dispatch, no reports, no worker resets, no Where: partitioning.
-│       One ticket at a time in this session, spec-gate between tickets.
-│       Everything marked [wide] is skipped — it guards a race that cannot happen.
-└─ >1 → WAVES. execute.md applies in full.
-```
 
-INLINE is **not** degraded mode. It keeps everything that carries value — the spec, the probe, the
-tickets, the literal gate, review, reconcile — and drops only the transport that parallelism pays for.
-Declare the mode in the run header either way; `--serial` forces INLINE.
+Each phase finishes its artifacts and checks; apply control C4 at requested phase/approval boundaries. `do` without an argument resumes the uniquely identifiable active feature; ask when several match.
 
-**Width counts builders, not delegation.** Read-only **scouts** and the adversarial **refuter** are
-verifiable at a glance and cost almost nothing, so they are available in every mode, INLINE included
-([cheap-workers.md](references/cheap-workers.md)).
+**Quick lane:** at most 3 files, 5 atomic steps, no design fork or cross-dependency. Declare `Where:`, follow the TDD table, snapshot, implement, gate, honesty, boundary with explicit `--where`, review, report. No spec/tickets required. If the scope grows, stop writing and take the full route while preserving partial work and recovery data.
 
-## Where cheap tokens are safe
+**Full route:** PLAN -> TICKETS -> EXECUTE -> VALIDATE. Load only the current phase:
 
-Class is not "which model is good enough". It is **where the verifier is stronger than the
-generator** — the only place a cheap worker's failure is caught for free.
-
-| Work | What verifies it | Class | Cheap model? |
-| --- | --- | --- | --- |
-| Read-only sweep, volume over depth | the paths it hands back | `scout` | **yes** |
-| `Done when` fully checkable by command | the gate | `mechanical` | **yes** |
-| Adversarial second opinion on a finding | decorrelation, not competence | — | **yes** |
-| Feature code in a codebase with invariants | nobody, until review/UAT | `standard` / `critical` | no |
-| Planning, composing waves, judging fidelity | nothing | — | **never** |
-
-Criteria per class and the "never spend tier as insurance" rule: [tickets.md](references/tickets.md).
-Running the gate is not model work at all: it is `scripts/spec-gate.sh` — a worker whose whole job is
-to run commands is a permission problem you invented. A project tunes it (gate command, spec section
-names, requirement-id prefix, test paths) through an optional `.specs/gate.conf`; absent, defaults
-apply and a fresh project needs no setup.
-
-## Runs to completion
-
-Every phase runs end to end. Choices that were approval gates — granularity, edges, merges, class,
-order — are **decided, recorded, and listed at the end** under `Decidido sem perguntar`: ten seconds
-to smell a bad call, and the tree is uncommitted so every one is reversible. `--review` restores a
-gate for one phase. Three walls stop a run, each detected by command, never by taste:
-
-1. `[wide]` **Escalation exhausted** — failed twice at its tier and the tier-up also failed.
-2. **Vanished work the index cannot restore** (`spec-gate.sh boundary`). Data loss; stop immediately.
-3. **Architectural fork with no defensible default.** A fork *with* a default is assumed and recorded.
-
-## Modes and pipeline
-
-`.specs/INDEX.md` present → **TRACKED** (INDEX + decisions/ + features/); absent → **STANDALONE**
-(`features/<f>/` only, decisions inline in the spec). Only `init --tracked` creates the chassis;
-`promote` upgrades standalone → tracked later. **Standalone is the lighter default — never force the
-chassis on a repo that did not ask for it.**
-
-| Scope | Route |
+| Phase | Read |
 | --- | --- |
-| ≤3 files, zero design decisions | **Quick lane**: atomic steps inline → execute. No artifacts (1 INDEX line if tracked). >5 steps or cross-deps → stop, take the full route. |
-| Everything else | PLAN → TICKETS → EXECUTE → VALIDATE |
+| PLAN: requirements, seams, unknowns | [plan.md](references/plan.md) |
+| TICKETS: vertical slices, risk, TDD | [tickets.md](references/tickets.md) |
+| EXECUTE, quick lane, reconcile | [execute.md](references/execute.md) and [verify.md](references/verify.md) |
+| VALIDATE: full gate, review, UAT | [verify.md](references/verify.md) |
+| Parallel execution only | [waves.md](references/waves.md) |
+| Choosing an optional worker/model | [cheap-workers.md](references/cheap-workers.md) |
+| Maintaining/evaluating this skill, not delivering a feature | [evaluate.md](references/evaluate.md) |
 
-- **PLAN** — seams, probes, FRs, fog → [references/plan.md](references/plan.md)
-- **TICKETS** — tracer-bullet slices, `Where:`, `Class:` → [references/tickets.md](references/tickets.md)
-- **EXECUTE** — width branch, invariant, boundary, reconcile → [references/execute.md](references/execute.md)
-- **VERIFY** — the TDD loop, review, VALIDATE, UAT → [references/verify.md](references/verify.md)
-- Scouts, refuters and the cheap-model gateway → [references/cheap-workers.md](references/cheap-workers.md)
-- `[wide]` only — the backend contract, compile, dispatch → [references/waves.md](references/waves.md)
+An explicit `plan` owns discovery: reuse approved designs and research; do not repeat a brainstorming interview or create a second plan. Create `design.md` only for an architectural decision or detailed design that does not fit the behavioral spec.
 
-`design.md` exists only when a real architectural decision needs recording.
+## Safety and stopping
 
-## Context budget
+Apply control C1-C3 before continuation and C7 for exhausted verification. Live database writes, deploys and third-party messages require explicit, dated, action-scoped authorization checked by the actor; a ticket/gate alone is not permission. Preserve owner work and resolve worker liveness before fallback or handover. Record reversible assumptions under `Decidido sem perguntar`, never as observed facts.
 
-Whatever the session-long participant loads is re-paid every turn of the feature.
+## Context and ownership
 
-| Moment | Load |
-| --- | --- |
-| Session start (tracked) | `sed -n '/^## Active/,/^## /p' .specs/INDEX.md` — nothing else |
-| Building a ticket | that ticket · only the FRs its `Implements:` names · its `Reads:` paths |
-| Reviewing | the diff · only those FR-ids · the tickets' `Reads:` — never a sweep of `docs/` |
-| Never | other features' specs · `## Done` entries · unreferenced decision files |
-| Never [wide] | orchestrator reading spec bodies, ticket bodies, diffs, or test output |
+Read repository instructions explicitly when the host does not preload them. Load the ticket, its `Implements:`/`UAT:` FRs **plus applicable seams, frozen contracts and decisions**, and `Reads:`. Review adds the scoped diff and evidence. Avoid unrelated features and doc sweeps, not necessary contract context.
 
-## Command surface
+The **main session** owns planning, ticket/INDEX edits, checkpoints, snapshot history, final validation and owner decisions. It may implement INLINE or dispatch builders. A **builder** owns only ticket code/tests. A **reviewer** reports findings without fixing them. An optional **coordinator** schedules and may execute snapshots/checks mechanically; the main session remains responsible for recording them and authoring artifacts.
 
-```
-/spec-ops init [--tracked]        prepare this repository to run the skill (see below)
-/spec-ops plan <name>             PLAN → features/<name>/spec.md
-/spec-ops tickets <name>          TICKETS → features/<name>/tickets/NN-*.md
-/spec-ops do [<name>|<NN>|<path>] EXECUTE. `implement` aliases it
-/spec-ops validate <name>         VALIDATE phase
-/spec-ops reconcile <name>        re-sync tickets/INDEX with what the code actually became
-/spec-ops promote <name>          standalone feature → tracked project
-```
+## Repository state
 
-Flags: `--review` gates that phase · `--serial` forces INLINE. `do` with no argument resumes from
-ticket `Status:` — **state lives in the tickets, not in chat memory.**
+Without `.specs/INDEX.md`, use **STANDALONE**: `.specs/features/<name>/`, decisions in the spec. With INDEX, use **TRACKED**: `## Active`, `## Done`, and `.specs/decisions/`. Never require tracking for execution.
 
-## `init` — prepare the repository
+`reconcile` follows control's state transitions and [execute.md](references/execute.md)'s evidence procedure. Feature Done requires all tickets `done`/`superseded` and VALIDATE passing under C11; files existing is not completion evidence.
 
-Runs anywhere, needs no prior state, and is the only command that writes outside `.specs/features/`.
-Three independent parts; do every one that applies and **report each as created, already present, or
-skipped with the reason**.
+`promote` requires feature directories and no INDEX. Inventory every feature; create INDEX without moving/deleting content. Run `spec`, `tickets` and the full gate before classifying a feature Done. Report invalid historical artifacts instead of normalizing them silently. Preserve old inline decisions; new tracked decisions use `decisions/`.
 
-**Two rules over all of it.** It is **idempotent** — never overwrite a file that exists; report it and
-move on. And it **creates nothing empty**: a stub config or a placeholder doc is worse than its
-absence, because the next reader treats it as a decision that was made.
+## Init and updates
 
-1. **Worker definitions — always.** Copy this skill's `agents/*.md` into the directory this harness
-   reads worker definitions from (Claude Code: `<repo>/.claude/agents/`). Five files, no edits. This
-   is what **decouples the worker's model from the session's**: without them a subagent inherits the
-   session model, so a cheap session silently downgrades the reviewer and every `critical` ticket.
-2. **`.specs/gate.conf` — only when it earns the file.** Ask for the project's gate command and put it
-   in `GATE_CMD`. Add `TEST_PATH_PATTERN` only after the default misfires — run `spec-gate.sh honesty`
-   and look at what it actually matched. **Skip the file entirely** when tickets carry their own literal
-   gate line and no project-wide gate is wanted.
-3. **Chassis — only with `--tracked`.** `.specs/INDEX.md` + a `PROJECT.md` stub. A repo whose `.specs/`
-   holds features and no `INDEX.md` has *chosen* standalone; say `promote` exists and leave it alone.
+Resolve the repository root and inspect existing files first. Report each item as created, present, or skipped with a reason. Never overwrite an existing installation implicitly; compare it with this skill, report drift, and request approval for an in-place update. Do not continue execution against a known incompatible runtime.
 
-Then report what the repo already gives a worker for free — its agent instructions (`CLAUDE.md`,
-`AGENTS.md`), any convention or environment docs a ticket's `Reads:` could point at. That inventory is
-the answer to "does this project need `.specs/codebase/`?", and the answer is usually no.
+1. Copy `scripts/spec-gate.sh` unchanged to `.specs/bin/spec-gate.sh`, preserving executable permission. If absent during another command, perform this minimal bootstrap before its first check; do not create tracking implicitly.
+2. Optionally install `agents/*.md` only if the host accepts their name/description Markdown format (for example, Claude Code's `.claude/agents/`). They have no fixed model or tool binding. Other hosts use their bodies as role instructions; no copied adapter is necessary. Verify available permissions separately.
+3. Create `.specs/gate.conf` only for a discovered project-wide `GATE_CMD` or necessary overrides. Prefer documented commands over asking. The config is sourced shell and gate commands execute literally: inspect them before running. Use explicit ticket gates when no shared config is needed.
+4. Only `init --tracked` creates a new INDEX. For existing standalone features, use `promote`. Create `PROJECT.md` only from useful known facts; do not create empty folders or placeholder documents.
 
-Rationale, the bar for adding a fifth definition, and why domain knowledge never goes in one:
-[references/waves.md](references/waves.md) § 2.
+## Examples
+
+- `plan checkout --review`: research, probe seams, write/check the spec, present decisions, wait before tickets.
+- `do checkout --serial`: resume tickets in dependency order, with snapshots, tests and review; no worker backend needed.
+- `validate checkout`: run the full gate and assembled-flow checks; unchecked UAT stays open even when tests pass.

@@ -6,8 +6,10 @@
 #
 #   spec-gate.sh spec     <feature-dir>            spec size + template conformance
 #   spec-gate.sh tickets  <feature-dir>            ticket header validity + edge sanity
-#   spec-gate.sh boundary <feature-dir>            worktree vs union of Where: + vanished work
-#   spec-gate.sh honesty  [base-ref]               skipped/deleted/weakened tests in the diff
+#   spec-gate.sh snapshot <snapshot-file>           capture dirty state without touching the index
+#   spec-gate.sh boundary <feature-dir> [options]   changed paths vs ticket/wave Where:
+#                       [--since <snapshot>] [--ticket <ticket>]... [--where <pattern>]...
+#   spec-gate.sh honesty  [base-ref]               explicit disables and deleted test files
 #   spec-gate.sh gate     ["<literal command>"]    run it, print the literal string + exit code
 #   spec-gate.sh count    "<count command>"        print a bare integer (ratchet)
 #
@@ -26,6 +28,7 @@ set -uo pipefail
 
 # Load the project's config first; every default below yields to it.
 for _c in "${SPEC_GATE_CONF:-}" .specs/gate.conf; do
+  # shellcheck source=/dev/null
   [[ -n ${_c:-} && -f $_c ]] && { . "$_c"; SPEC_GATE_CONF_USED=$_c; break; }
 done
 
@@ -40,18 +43,104 @@ findings=0
 say() { printf '%s\n' "$*"; findings=$((findings + 1)); }
 ok()  { printf 'ok: %s\n' "$*"; }
 
+require_worktree() {
+  local prefix
+  [[ $(git rev-parse --is-inside-work-tree 2>/dev/null) == true ]] \
+    || { echo 'error: not a git worktree' >&2; exit 2; }
+  prefix=$(git rev-parse --show-prefix) || exit 2
+  [[ -z $prefix ]] || { echo 'error: run from the git worktree root' >&2; exit 2; }
+}
+
+encode_path() { printf '%s' "$1" | base64 | tr -d '\n'; }
+decode_path() { printf '%s' "$1" | base64 --decode; }
+
+status_records() {
+  local entry status path encoded original raw
+  raw=$(mktemp "${TMPDIR:-/tmp}/spec-gate-status.XXXXXX") \
+    || { echo 'error: cannot create status buffer' >&2; return 2; }
+  # Ignore settings must not hide dirty submodules from safety checks.
+  if ! git status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none >"$raw"; then
+    rm -f "$raw"
+    echo 'error: cannot read git status' >&2
+    return 2
+  fi
+  # Error paths unlink our temporary buffer only immediately before returning.
+  # shellcheck disable=SC2094
+  while IFS= read -r -d '' entry; do
+    status=${entry:0:2}
+    path=${entry:3}
+    encoded=$(encode_path "$path")
+    printf '%s\t%s\n' "$status" "$encoded"
+    if [[ $status == *R* || $status == *C* ]]; then
+      IFS= read -r -d '' original \
+        || { rm -f "$raw"; echo 'error: incomplete rename status' >&2; return 2; }
+      encoded=$(encode_path "$original")
+      printf '%s\t%s\n' "$status" "$encoded"
+    fi
+  done <"$raw"
+  rm -f "$raw"
+}
+
+file_mode() {
+  if stat -f '%Lp' "$1" >/dev/null 2>&1; then
+    stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
+}
+
+worktree_hash() {
+  local path=$1 target
+  if [[ -L $path ]]; then
+    target=$(readlink "$path") || return 2
+    printf '%s' "$target" | git hash-object --stdin
+  elif [[ -f $path ]]; then
+    git hash-object -- "$path"
+  elif [[ -d $path ]]; then
+    echo "error: unsupported dirty directory/submodule: $path; preserve its changes and make it clean before retrying" >&2
+    return 2
+  else
+    printf 'MISSING'
+  fi
+}
+
+write_manifest() {
+  local target=$1 status encoded path hash mode index_hash records
+  records=$(status_records) || return 2
+  : >"$target" || return 2
+  while IFS=$'\t' read -r status encoded; do
+    [[ -n $encoded ]] || continue
+    path=$(decode_path "$encoded") || return 2
+    case $path in .specs/*) continue;; esac
+    hash=$(worktree_hash "$path") \
+      || { echo "error: cannot hash worktree path: $path" >&2; return 2; }
+    mode=MISSING
+    if [[ -e $path || -L $path ]]; then
+      mode=$(file_mode "$path") \
+        || { echo "error: cannot read mode: $path" >&2; return 2; }
+    fi
+    index_hash=$(git ls-files -s -- "$path" | git hash-object --stdin) \
+      || { echo "error: cannot hash index entry: $path" >&2; return 2; }
+    printf '%s\t%s\t%s\t%s\t%s\n' "$encoded" "$status" "$hash" "$mode" "$index_hash" >>"$target" || return 2
+  done <<<"$records"
+  sort -u -o "$target" "$target" || return 2
+}
+
 cmd_spec() {
   local dir=${1:?feature dir} spec="$1/spec.md"
   [[ -f $spec ]] || { echo "error: no $spec" >&2; exit 2; }
-  local bytes; bytes=$(wc -c <"$spec" | tr -d ' ')
+  local bytes; bytes=$(wc -c <"$spec" | tr -d ' ') \
+    || { echo "error: cannot read $spec" >&2; return 2; }
   if   (( bytes > SPEC_HARD_BYTES )); then say "spec ${bytes}B > hard ${SPEC_HARD_BYTES}B — split into design.md or ticket Notes"
   elif (( bytes > SPEC_SMELL_BYTES )); then say "spec ${bytes}B > smell ${SPEC_SMELL_BYTES}B — recipes or pasted evidence, almost always"
   else ok "spec ${bytes}B"; fi
 
-  local h missing=0
+  local h headings missing=0
+  headings=$(sed -nE '/^## / { s/ +[(—\/].*$//; s/ +$//; p; }' "$spec") \
+    || { echo "error: cannot read $spec" >&2; return 2; }
   local IFS='|'
   for h in $SPEC_REQUIRED_SECTIONS; do
-    grep -qF "$h" "$spec" || { say "missing section: $h"; missing=1; }
+    grep -qFx "$h" <<<"$headings" || { say "missing section: $h"; missing=1; }
   done
   unset IFS
 
@@ -79,6 +168,8 @@ cmd_spec() {
   [[ -n $dupes ]] && say "duplicate ${FR_PREFIX} ids: $(echo "$dupes" | tr '\n' ' ')"
   if [[ -d $dir/tickets ]]; then
     local fr
+    # Requirement IDs are whitespace-free tokens, not arbitrary input lines.
+    # shellcheck disable=SC2013
     for fr in $(grep -oE "${FR_PREFIX}-[0-9]+" "$spec" | sort -u); do
       grep -qE "^Implements:.*\b$fr\b" "$dir"/tickets/*.md 2>/dev/null \
         || grep -qE "^UAT:.*\b$fr\b" "$dir"/tickets/*.md 2>/dev/null \
@@ -88,12 +179,23 @@ cmd_spec() {
   return 0
 }
 
+whole_tree_path() {
+  case $1 in
+    .|./|'*'|'**'|'**/*') return 0;;
+    *) return 1;;
+  esac
+}
+
 cmd_tickets() {
   local dir=${1:?feature dir}/tickets
   [[ -d $dir ]] || { echo "error: no $dir" >&2; exit 2; }
-  local f n
+  local f n where pattern count=0 seen_ids=' '
   for f in "$dir"/*.md; do
+    [[ -f $f ]] || continue
+    count=$((count + 1))
     n=$(basename "$f")
+    where=$(sed -nE 's/^Where: *//p' "$f" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') \
+      || { echo "error: cannot read ticket $f" >&2; return 2; }
     local k
     for k in "Blocked by" Where Reads Class TDD UAT Implements Status; do
       grep -qE "^$k:" "$f" || say "$n: missing header field '$k:'"
@@ -102,7 +204,9 @@ cmd_tickets() {
     grep -qE '^TDD: (red-green|ratchet|none)$'                 "$f" || say "$n: invalid TDD"
     grep -qE '^Status: (ready|dispatched|done|failed|superseded)$' "$f" || say "$n: invalid Status"
     grep -qE '^Where: *$'  "$f" && say "$n: empty Where: — no parallelism contract, no boundary check"
-    grep -qE '^Where:.*(\*\*/\*|^Where: \.$| \. )' "$f" && say "$n: Where: matches the whole tree"
+    while IFS= read -r pattern; do
+      whole_tree_path "$pattern" && say "$n: Where: matches the whole tree"
+    done <<<"$where"
     grep -qE '^## Done when' "$f" || say "$n: no '## Done when'"
     grep -qE '^- \[[ x]\] gate:' "$f" || say "$n: 'Done when' carries no literal gate line"
     # a mechanical ticket that asks for judgment is misclassified
@@ -110,56 +214,275 @@ cmd_tickets() {
       say "$n: Class: mechanical but the body asks for a judgment call — promote to standard"
     fi
     # blocked-by must point at a ticket that exists
-    local dep
+    local dep current_id current_num dep_num
+    current_id=${n%%-*}
+    [[ $current_id =~ ^[0-9]+$ ]] \
+      || { say "$n: filename must start with a numeric ticket id"; continue; }
+    # Normalize decimal identities as strings, without integer overflow.
+    current_num=${current_id#"${current_id%%[!0]*}"}
+    current_num=${current_num:-0}
+    if [[ $seen_ids == *" $current_num "* ]]; then
+      say "$n: duplicate numeric ticket id $current_num -- use unique numeric prefixes"
+    fi
+    seen_ids="$seen_ids$current_num "
     for dep in $(sed -nE 's/^Blocked by: *//p' "$f" | tr ',' ' '); do
       [[ $dep == none ]] && continue
-      ls "$dir"/"$dep"-*.md >/dev/null 2>&1 || say "$n: Blocked by $dep — no such ticket"
+      if [[ ! $dep =~ ^[0-9]+$ ]]; then
+        say "$n: Blocked by $dep — dependency id must be numeric"
+        continue
+      fi
+      ls "$dir"/"$dep"-*.md >/dev/null 2>&1 || { say "$n: Blocked by $dep — no such ticket"; continue; }
+      dep_num=$((10#$dep))
+      (( dep_num < current_num )) || say "$n: Blocked by $dep — dependencies must have a lower ticket id"
     done
   done
-  (( findings == 0 )) && ok "$(ls "$dir"/*.md | wc -l | tr -d ' ') tickets, headers valid"
+  (( count > 0 )) || { echo "error: no tickets in $dir" >&2; exit 2; }
+  (( findings == 0 )) && ok "$count tickets, headers valid"
   return 0
 }
 
-cmd_boundary() {
-  local dir=${1:?feature dir} base="$1/.baseline"
-  local globs; globs=$(sed -nE 's/^Where: *//p' "$dir"/tickets/*.md 2>/dev/null | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$')
-  [[ -z $globs ]] && { echo "error: no Where: globs in $dir/tickets" >&2; exit 2; }
-  local changed; changed=$(git status --porcelain | cut -c4- | sed 's/^"//; s/"$//')
-  local p g hit
-  while IFS= read -r p; do
-    [[ -z $p ]] && continue
-    case $p in .specs/*) continue;; esac      # orchestrator-owned, outside every ticket by design
-    # If the file was already in baseline, it's not a stray write from this feature
-    if [[ -f $base ]] && grep -qF "$p" "$base"; then continue; fi
-    hit=0
-    while IFS= read -r g; do
-      # shellcheck disable=SC2053
-      [[ $p == $g || $p == ${g%/}/* || $p == ${g%\*}* ]] && { hit=1; break; }
-    done <<<"$globs"
-    (( hit )) || say "stray write outside every Where:: $p"
-  done <<<"$changed"
-  if [[ -f $base ]]; then
-    while IFS= read -r p; do
-      [[ -z $p ]] && continue
-      [[ -e $p ]] || git diff --cached --name-only | grep -qxF "$p" || say "VANISHED (wall 3 unless the index restores it): $p"
-    done < <(cut -c4- "$base" | sed 's/^"//; s/"$//')
+cmd_snapshot() {
+  local target=${1:?snapshot file} parent recovery manifest encoded path recovery_key copy_failed=0
+  require_worktree
+  parent=$(dirname "$target")
+  [[ -d $parent ]] || { echo "error: no $parent" >&2; exit 2; }
+  [[ ! -e $target && ! -L $target ]] || { echo "error: snapshot exists: $target" >&2; exit 2; }
+
+  recovery=$(git rev-parse --git-path "spec-ops/$(printf '%s' "$target" | git hash-object --stdin)") \
+    || { echo "error: not a git worktree" >&2; exit 2; }
+  [[ ! -e $recovery && ! -L $recovery ]] || { echo "error: recovery exists: $recovery" >&2; exit 2; }
+  mkdir -p "$recovery/files" \
+    || { echo "error: cannot create recovery directory: $recovery" >&2; return 2; }
+  manifest=$(mktemp "${TMPDIR:-/tmp}/spec-gate-snapshot.XXXXXX") \
+    || { echo 'error: cannot create snapshot manifest' >&2; return 2; }
+  if ! write_manifest "$manifest"; then
+    echo 'error: cannot read current worktree state' >&2
+    rm -f "$manifest"
+    rm -rf "$recovery"
+    return 2
   fi
-  (( findings == 0 )) && ok "worktree within Where:, nothing vanished"
+  if ! {
+    printf '# spec-gate snapshot v1\n'
+    printf '# recovery: %s\n' "$recovery"
+    cat "$manifest"
+  } >"$target"; then
+    echo "error: cannot write snapshot: $target" >&2
+    rm -f "$manifest" "$target"
+    rm -rf "$recovery"
+    return 2
+  fi
+
+  while IFS=$'\t' read -r encoded _; do
+    path=$(decode_path "$encoded") || { copy_failed=1; break; }
+    if [[ -e $path || -L $path ]]; then
+      recovery_key=$(printf '%s' "$path" | git hash-object --stdin) || { copy_failed=1; break; }
+      cp -pPR "./$path" "$recovery/files/$recovery_key" || copy_failed=1
+    fi
+  done <"$manifest"
+  if (( copy_failed )) || ! cp "$target" "$recovery/manifest"; then
+    echo 'error: recovery snapshot is incomplete' >&2
+    rm -f "$manifest" "$target"
+    rm -rf "$recovery"
+    return 2
+  fi
+  rm -f "$manifest"
+  ok "snapshot $target; recovery $recovery"
+}
+
+path_allowed() {
+  local path=$1 patterns=$2 pattern
+  while IFS= read -r pattern; do
+    [[ -z $pattern ]] && continue
+    if [[ $pattern == */ ]]; then
+      [[ $path == "$pattern"* ]] && return 0
+    elif [[ $pattern == *'*'* || $pattern == *'?'* || $pattern == *'['* ]]; then
+      # Where explicitly authorizes Bash patterns.
+      # shellcheck disable=SC2053
+      [[ $path == $pattern ]] && return 0
+    elif [[ $path == "$pattern" ]]; then
+      return 0
+    fi
+  done <"$patterns"
+  return 1
+}
+
+cmd_boundary() {
+  local dir=${1:?feature dir} since='' ticket_files='' direct_where='' arg patterns current keys encoded old new path
+  require_worktree
+  shift
+  while (( $# )); do
+    arg=$1
+    case $arg in
+      --since)
+        [[ $# -ge 2 ]] || { echo 'error: --since needs a snapshot' >&2; exit 2; }
+        since=$2
+        shift 2
+        ;;
+      --ticket)
+        [[ $# -ge 2 ]] || { echo 'error: --ticket needs a path' >&2; exit 2; }
+        ticket_files=${ticket_files}${2}$'\n'
+        shift 2
+        ;;
+      --where)
+        [[ $# -ge 2 ]] || { echo 'error: --where needs a pattern' >&2; exit 2; }
+        direct_where=${direct_where}${2}$'\n'
+        shift 2
+        ;;
+      *) echo "error: unknown boundary option: $arg" >&2; exit 2;;
+    esac
+  done
+
+  patterns=$(mktemp "${TMPDIR:-/tmp}/spec-gate-patterns.XXXXXX") || return 2
+  [[ -n $direct_where ]] && printf '%s' "$direct_where" >>"$patterns"
+  if [[ -n $ticket_files ]]; then
+    while IFS= read -r arg; do
+      [[ -z $arg ]] && continue
+      [[ -f $arg ]] || { rm -f "$patterns"; echo "error: no ticket $arg" >&2; exit 2; }
+      sed -nE 's/^Where: *//p' "$arg" >>"$patterns" \
+        || { rm -f "$patterns"; echo "error: cannot read ticket $arg" >&2; return 2; }
+    done <<<"$ticket_files"
+  elif [[ -z $direct_where ]]; then
+    local found=0 file
+    for file in "$dir"/tickets/*.md; do
+      [[ -f $file ]] || continue
+      found=1
+      sed -nE 's/^Where: *//p' "$file" >>"$patterns" \
+        || { rm -f "$patterns"; echo "error: cannot read ticket $file" >&2; return 2; }
+    done
+    (( found )) || { rm -f "$patterns"; echo "error: no tickets in $dir/tickets" >&2; exit 2; }
+  fi
+  if ! tr ',' '\n' <"$patterns" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' >"$patterns.clean" \
+    || ! mv "$patterns.clean" "$patterns"; then
+    rm -f "$patterns" "$patterns.clean"
+    echo 'error: cannot read Where: paths' >&2
+    return 2
+  fi
+  [[ -s $patterns ]] || { rm -f "$patterns"; echo 'error: no Where: paths' >&2; exit 2; }
+  while IFS= read -r arg; do
+    whole_tree_path "$arg" && say 'Where: matches the whole tree'
+  done <"$patterns"
+  (( findings == 0 )) || { rm -f "$patterns"; return 0; }
+
+  current=$(mktemp "${TMPDIR:-/tmp}/spec-gate-current.XXXXXX") || { rm -f "$patterns"; return 2; }
+  if ! write_manifest "$current"; then
+    rm -f "$patterns" "$current"
+    echo 'error: cannot read current worktree state' >&2
+    exit 2
+  fi
+  if [[ -n $since ]]; then
+    [[ -f $since ]] || { rm -f "$patterns" "$current"; echo "error: no snapshot $since" >&2; exit 2; }
+    grep -qF '# spec-gate snapshot v1' "$since" \
+      || { rm -f "$patterns" "$current"; echo "error: invalid snapshot $since" >&2; exit 2; }
+    keys=$(mktemp "${TMPDIR:-/tmp}/spec-gate-keys.XXXXXX") || { rm -f "$patterns" "$current"; return 2; }
+    if ! awk -F '\t' '!/^#/ {print $1}' "$since" "$current" | sort -u >"$keys"; then
+      rm -f "$patterns" "$current" "$keys"
+      echo 'error: cannot read snapshot keys' >&2
+      return 2
+    fi
+    # Error cleanup unlinks this temporary key list only before returning.
+    # shellcheck disable=SC2094
+    while IFS= read -r encoded; do
+      [[ -z $encoded ]] && continue
+      if ! old=$(awk -F '\t' -v key="$encoded" '$1 == key' "$since") \
+        || ! new=$(awk -F '\t' -v key="$encoded" '$1 == key' "$current"); then
+        rm -f "$patterns" "$current" "$keys"
+        echo 'error: cannot read snapshot entry' >&2
+        return 2
+      fi
+      [[ $old == "$new" ]] && continue
+      path=$(decode_path "$encoded")
+      path_allowed "$path" "$patterns" || say "write outside selected Where:: $path"
+    done <"$keys"
+    rm -f "$keys"
+  else
+    while IFS=$'\t' read -r encoded _; do
+      path=$(decode_path "$encoded")
+      path_allowed "$path" "$patterns" || say "write outside selected Where:: $path"
+    done <"$current"
+  fi
+  rm -f "$patterns" "$current"
+  (( findings == 0 )) && ok "changed paths within selected Where:"
   return 0
 }
 
 cmd_honesty() {
   local base=${1:-HEAD}
-  local testfiles; testfiles=$(git diff --name-only "$base" 2>/dev/null | grep -iE "$TEST_PATH_PATTERN")
-  [[ -z $testfiles ]] && { ok "no test files in the diff"; return 0; }
-  local pat='\.skip\(|\.only\(|xit\(|xdescribe\(|@pytest\.mark\.skip|@unittest\.skip|t\.Skip\(|#\[ignore\]|^\s*pending\(|^\+\s*skip '
-  local added; added=$(git diff -U0 "$base" -- $testfiles | grep -E '^\+' | grep -vE '^\+\+\+' | grep -nE "$pat")
-  [[ -n $added ]] && say "test cases silently disabled:"$'\n'"$added"
-  local del; del=$(git diff --numstat "$base" -- $testfiles | awk '$2 > 0 {rm += $2} END {print rm + 0}')
-  (( del > 0 )) && say "$del lines removed from test files — an intentional behavior change is named in the report, not left implicit"
-  local gone; gone=$(git diff --diff-filter=D --name-only "$base" -- $testfiles)
-  [[ -n $gone ]] && say "test files DELETED: $(echo "$gone" | tr '\n' ' ')"
-  (( findings == 0 )) && ok "no skipped, deleted or shrunk tests"
+  require_worktree
+  git rev-parse --verify "$base^{commit}" >/dev/null 2>&1 \
+    || { echo "error: invalid base ref: $base" >&2; exit 2; }
+  local pat='\.(skip|only|todo)\(|xit\(|xdescribe\(|@pytest\.mark\.skip|@unittest\.skip|t\.Skip\(|#\[ignore\]|^[[:space:]]*pending\(|^[[:space:]]*skip '
+  local status encoded path original added records changes patch view rc seen=0
+  local diff_args
+  records=$(status_records) || return 2
+  while IFS=$'\t' read -r status encoded; do
+    [[ $status == '??' ]] || continue
+    path=$(decode_path "$encoded") || return 2
+    [[ $path =~ $TEST_PATH_PATTERN ]] || continue
+    seen=1
+    added=$(grep -nE "$pat" -- "$path"); rc=$?
+    (( rc <= 1 )) || { echo "error: cannot read test $path" >&2; return 2; }
+    [[ -n $added ]] && say "test cases silently disabled in $path:"$'\n'"$added"
+  done <<<"$records"
+
+  changes=$(mktemp "${TMPDIR:-/tmp}/spec-gate-diff.XXXXXX") || return 2
+  # Compare both publishable index content and current files against the requested base.
+  for view in index worktree; do
+    diff_args=("$base")
+    [[ $view == index ]] && diff_args=(--cached "$base")
+    if ! git diff --no-color --no-ext-diff --no-textconv --find-renames --name-status -z "${diff_args[@]}" -- >"$changes"; then
+      rm -f "$changes"
+      echo "error: cannot read $view diff" >&2
+      return 2
+    fi
+    # Error cleanup unlinks this temporary diff buffer only before returning.
+    # shellcheck disable=SC2094
+    while IFS= read -r -d '' status; do
+      IFS= read -r -d '' original \
+        || { rm -f "$changes"; echo 'error: incomplete diff path' >&2; return 2; }
+      path=$original
+      if [[ $status == R* || $status == C* ]]; then
+        IFS= read -r -d '' path \
+          || { rm -f "$changes"; echo 'error: incomplete rename diff' >&2; return 2; }
+      fi
+      [[ $original =~ $TEST_PATH_PATTERN || $path =~ $TEST_PATH_PATTERN ]] || continue
+      seen=1
+      if [[ $status == D || ( $status == R* && ! $path =~ $TEST_PATH_PATTERN ) ]]; then
+        say "test file DELETED: $original"
+        continue
+      fi
+      [[ $path =~ $TEST_PATH_PATTERN ]] || continue
+      if [[ $status == R* && ! $original =~ $TEST_PATH_PATTERN ]]; then
+        # Entering test discovery introduces the entire test, even for an unchanged rename.
+        if [[ $view == index ]]; then
+          patch=$(git cat-file blob ":$path"); rc=$?
+        else
+          patch=$(cat -- "$path"); rc=$?
+        fi
+        if (( rc != 0 )); then
+          rm -f "$changes"
+          echo "error: cannot read renamed test $path" >&2
+          return 2
+        fi
+        added=$(printf '%s\n' "$patch" | grep -nE "$pat"); rc=$?
+      else
+        if ! patch=$(git diff --no-color --no-ext-diff --no-textconv --find-renames -U0 "${diff_args[@]}" -- "$original" "$path"); then
+          rm -f "$changes"
+          echo "error: cannot read test diff $path" >&2
+          return 2
+        fi
+        added=$(printf '%s\n' "$patch" | sed -n '/^+++ /d; s/^+//p' | grep -nE "$pat"); rc=$?
+      fi
+      if (( rc > 1 )); then
+        rm -f "$changes"
+        echo "error: cannot inspect test diff $path" >&2
+        return 2
+      fi
+      [[ -n $added ]] && say "test cases silently disabled in $path:"$'\n'"$added"
+    done <"$changes"
+  done
+  rm -f "$changes"
+  (( seen == 0 )) && ok "no test files in the diff"
+  (( seen > 0 && findings == 0 )) && ok "no skipped or deleted tests; assertion changes require review"
   return 0
 }
 
@@ -173,18 +496,39 @@ cmd_gate() {
   return 0
 }
 
-cmd_count() { local c=${1:?command}; eval "$c" 2>/dev/null | grep -oE '[0-9]+' | tail -1; }
+cmd_count() {
+  local c=${1:?command} out rc
+  out=$(eval "$c" 2>&1); rc=$?
+  if (( rc != 0 )); then
+    printf 'error: count command exited %d: %s\n' "$rc" "$out" >&2
+    return 2
+  fi
+  if [[ ! $out =~ ^[0-9]+$ ]]; then
+    printf 'error: count command must print one bare integer: %s\n' "$out" >&2
+    return 2
+  fi
+  printf '%s\n' "$out"
+}
 
 [[ -n ${SPEC_GATE_CONF_USED:-} && ${1:-} != count ]] && printf 'conf: %s\n' "$SPEC_GATE_CONF_USED"
 
 case ${1:-} in
+  spec|tickets|snapshot|boundary|count)
+    [[ -n ${2:-} ]] || { echo "error: $1 needs an argument" >&2; exit 2; }
+    ;;
+esac
+
+case ${1:-} in
   spec)     shift; cmd_spec "$@";;
   tickets)  shift; cmd_tickets "$@";;
+  snapshot) shift; cmd_snapshot "$@"; exit $?;;
   boundary) shift; cmd_boundary "$@";;
   honesty)  shift; cmd_honesty "$@";;
   gate)     shift; cmd_gate "$@"; exit $?;;
-  count)    shift; cmd_count "$@"; exit 0;;
+  count)    shift; cmd_count "$@"; exit $?;;
   *) sed -n '2,20p' "$0"; exit 2;;
 esac
+rc=$?
+(( rc == 0 )) || exit "$rc"
 (( findings > 0 )) && exit 1
 exit 0
