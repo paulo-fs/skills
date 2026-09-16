@@ -12,6 +12,27 @@ npx skills@latest add paulo-fs/skills
 
 ## Available skills
 
+### code-review
+
+Evidence-driven review of backend, frontend, and full-stack PRs, local diffs, and cross-service changes. Load the relevant technical lens, trace affected contracts, require a reachable failure and a patch connection for each finding, and prioritize by impact. UI layout and focus claims require browser evidence. The default output is the conversation; reports and GitHub publication are opt-in.
+
+Example requests:
+
+```text
+Review these PRs; exclude migrations and do not create a worktree.
+Review my staged changes for regressions.
+Review this React form and its API change.
+Publish the findings to their respective PRs.
+```
+
+See [`skills/code-review/SKILL.md`](skills/code-review/SKILL.md). Validate its documents with Python 3.9+:
+
+```bash
+python3 skills/code-review/tests/validate.py
+```
+
+Behavioral evaluation scenarios and their expected results are in [`references/evaluate.md`](skills/code-review/references/evaluate.md). Structural checks do not establish reviewer accuracy.
+
 ### spec-ops
 
 Model-neutral spec-driven delivery: write a spec with sourced acceptance examples, split it into vertical tickets, implement each slice, and validate the result. A shared decision policy governs backend selection, checkpoints, retries, and completion; INLINE is the default and parallel workers are optional.
